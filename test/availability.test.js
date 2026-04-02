@@ -2,8 +2,8 @@ const test = require("node:test");
 const assert = require("node:assert/strict");
 const path = require("path");
 
-process.env.CALENDAR_PROVIDER = "sqlite";
-process.env.APPOINTMENTS_DB_PATH = path.join(__dirname, "test-appointments.db");
+process.env.CALENDAR_PROVIDER = process.env.CALENDAR_PROVIDER || "sqlite";
+process.env.APPOINTMENTS_DB_PATH = process.env.APPOINTMENTS_DB_PATH || path.join(__dirname, "test-appointments.db");
 
 const {
   bookAppointment,
@@ -31,6 +31,7 @@ test("returns available slots for a working day", async () => {
   assert.equal(result.available, true);
   assert.ok(Array.isArray(result.available_slots));
   assert.ok(result.available_slots.length > 0);
+  assert.equal(result.available_slots[0].start, "2026-04-03T09:00:00+02:00");
 });
 
 test("marks an occupied slot as unavailable", async () => {

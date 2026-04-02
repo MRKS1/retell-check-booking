@@ -1,15 +1,13 @@
 const { CONFIG } = require("./config");
 const { getCalendarProvider } = require("./providers");
-
-const WEEKDAY_KEYS = [
-  "sunday",
-  "monday",
-  "tuesday",
-  "wednesday",
-  "thursday",
-  "friday",
-  "saturday"
-];
+const {
+  addDaysInTimeZone,
+  formatDateOnlyInTimeZone,
+  formatDateTimeInTimeZone,
+  getStartOfDayInTimeZone,
+  getTimeZoneParts,
+  makeDateInTimeZone
+} = require("./timezone");
 
 function parseMinutes(timeValue) {
   const [hours, minutes] = timeValue.split(":").map(Number);
@@ -17,33 +15,24 @@ function parseMinutes(timeValue) {
 }
 
 function setTimeForDate(date, timeValue) {
-  const result = new Date(date);
+  const parts = getTimeZoneParts(date, CONFIG.timezone);
   const [hours, minutes] = timeValue.split(":").map(Number);
-  result.setHours(hours, minutes, 0, 0);
-  return result;
+  return makeDateInTimeZone({
+    year: parts.year,
+    month: parts.month,
+    day: parts.day,
+    hour: hours,
+    minute: minutes,
+    second: 0
+  }, CONFIG.timezone);
 }
 
 function formatDateTimeLocal(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  const hours = String(date.getHours()).padStart(2, "0");
-  const minutes = String(date.getMinutes()).padStart(2, "0");
-  const seconds = String(date.getSeconds()).padStart(2, "0");
-
-  const offsetMinutesTotal = -(date.getTimezoneOffset());
-  const sign = offsetMinutesTotal >= 0 ? "+" : "-";
-  const offsetHours = String(Math.floor(Math.abs(offsetMinutesTotal) / 60)).padStart(2, "0");
-  const offsetMinutes = String(Math.abs(offsetMinutesTotal) % 60).padStart(2, "0");
-
-  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}${sign}${offsetHours}:${offsetMinutes}`;
+  return formatDateTimeInTimeZone(date, CONFIG.timezone);
 }
 
 function formatDateOnly(date) {
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
+  return formatDateOnlyInTimeZone(date, CONFIG.timezone);
 }
 
 function overlaps(startA, endA, startB, endB) {
@@ -51,7 +40,7 @@ function overlaps(startA, endA, startB, endB) {
 }
 
 function getBusinessHoursForDate(date) {
-  const weekday = WEEKDAY_KEYS[date.getDay()];
+  const { weekday } = getTimeZoneParts(date, CONFIG.timezone);
   return CONFIG.businessHours[weekday];
 }
 
@@ -78,13 +67,15 @@ function generateSlotsForDate(date, durationMinutes, appointments) {
     currentMinutes + durationMinutes <= endMinutes;
     currentMinutes += CONFIG.slotIntervalMinutes
   ) {
-    const slotStart = new Date(date);
-    slotStart.setHours(
-      Math.floor(currentMinutes / 60),
-      currentMinutes % 60,
-      0,
-      0
-    );
+    const dateParts = getTimeZoneParts(date, CONFIG.timezone);
+    const slotStart = makeDateInTimeZone({
+      year: dateParts.year,
+      month: dateParts.month,
+      day: dateParts.day,
+      hour: Math.floor(currentMinutes / 60),
+      minute: currentMinutes % 60,
+      second: 0
+    }, CONFIG.timezone);
 
     const slotEnd = new Date(slotStart.getTime() + (durationMinutes * 60 * 1000));
     const isBusy = appointmentsForDay.some((appointment) => {
@@ -106,13 +97,12 @@ function generateSlotsForDate(date, durationMinutes, appointments) {
 
 function findNextAvailableSlots(startDate, durationMinutes, appointments) {
   const suggestions = [];
-  const cursor = new Date(startDate);
-  cursor.setHours(0, 0, 0, 0);
+  let cursor = getStartOfDayInTimeZone(startDate, CONFIG.timezone);
 
   while (suggestions.length < CONFIG.maxSuggestions) {
     const slots = generateSlotsForDate(cursor, durationMinutes, appointments);
     suggestions.push(...slots);
-    cursor.setDate(cursor.getDate() + 1);
+    cursor = addDaysInTimeZone(cursor, 1, CONFIG.timezone);
   }
 
   return suggestions.slice(0, CONFIG.maxSuggestions);
@@ -135,11 +125,8 @@ function getValidatedDurationMinutes(payload) {
 }
 
 function getSearchWindow(anchorDate) {
-  const startDate = new Date(anchorDate);
-  startDate.setHours(0, 0, 0, 0);
-
-  const endDate = new Date(startDate);
-  endDate.setDate(endDate.getDate() + CONFIG.availabilitySearchDays);
+  const startDate = getStartOfDayInTimeZone(anchorDate, CONFIG.timezone);
+  const endDate = addDaysInTimeZone(startDate, CONFIG.availabilitySearchDays, CONFIG.timezone);
 
   return {
     startDate,
@@ -246,7 +233,15 @@ async function checkAvailability(payload) {
     };
   }
 
-  const requestedDate = new Date(`${payload.date}T00:00:00`);
+  const [year, month, day] = payload.date.split("-").map(Number);
+  const requestedDate = makeDateInTimeZone({
+    year,
+    month,
+    day,
+    hour: 0,
+    minute: 0,
+    second: 0
+  }, CONFIG.timezone);
 
   if (Number.isNaN(requestedDate.getTime())) {
     return {
