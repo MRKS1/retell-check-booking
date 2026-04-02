@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "properties": {
+    "date": {
+      "type": "string",
+      "description": "Requested appointment date in YYYY-MM-DD format. Use this when the caller asks for availability on a day but does not specify an exact time."
+    },
+    "start_time": {
+      "type": "string",
+      "description": "Requested appointment start time in ISO 8601 format with timezone offset, for example 2026-04-03T10:00:00+02:00. Use this when the caller gives an exact time."
+    },
+    "duration_minutes": {
+      "type": "integer",
+      "description": "Appointment duration in minutes. Defaults to 30 if not provided."
+    }
+  }
+}

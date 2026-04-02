@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: check-availability-backend
+    runtime: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: CALENDAR_PROVIDER
+        value: sqlite
+      - key: NODE_VERSION
+        value: 24.14.0

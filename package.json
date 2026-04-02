@@ -1,0 +1,11 @@
+{
+  "name": "check_availability",
+  "version": "1.0.0",
+  "description": "Simple backend server for appointment availability checks",
+  "main": "src/server.js",
+  "type": "commonjs",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test"
+  }
+}

@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": [
+    "appointment_id"
+  ],
+  "properties": {
+    "appointment_id": {
+      "type": "string",
+      "description": "The appointment id returned by book_appointment. For Google Calendar provider this is the Google event id."
+    }
+  }
+}
