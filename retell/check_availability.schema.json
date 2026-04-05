@@ -1,6 +1,12 @@
 {
   "type": "object",
+  "required": ["service"],
   "properties": {
+    "service": {
+      "type": "string",
+      "enum": ["sportova_prehliadka", "vstupne_vysetrenie", "kontrolne_vysetrenie", "zdravotnicka_pomocka", "konzultacia"],
+      "description": "Type of appointment. sportova_prehliadka = sports medical exam (7:00-8:40), vstupne_vysetrenie = initial visit (9:00-11:50), kontrolne_vysetrenie = follow-up after treatment (13:00-14:30), zdravotnicka_pomocka = medical device prescription (9:00-11:50 or 13:00-14:30, max 1 per day), konzultacia = paid express consultation 30 EUR (14:40-14:50)."
+    },
     "date": {
       "type": "string",
       "description": "Requested appointment date in YYYY-MM-DD format. Use this when the caller asks for availability on a day but does not specify an exact time."
@@ -8,10 +14,6 @@
     "start_time": {
       "type": "string",
       "description": "Requested appointment start time in ISO 8601 format with timezone offset, for example 2026-04-03T10:00:00+02:00. Use this when the caller gives an exact time."
-    },
-    "duration_minutes": {
-      "type": "integer",
-      "description": "Appointment duration in minutes. Defaults to 30 if not provided."
     }
   }
 }

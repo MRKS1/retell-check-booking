@@ -1,32 +1,30 @@
 {
   "type": "object",
   "required": [
-    "start_time"
+    "start_time",
+    "service"
   ],
   "properties": {
+    "service": {
+      "type": "string",
+      "enum": ["sportova_prehliadka", "vstupne_vysetrenie", "kontrolne_vysetrenie", "zdravotnicka_pomocka", "konzultacia"],
+      "description": "Type of appointment being booked. Must match the service used in check_available_slots."
+    },
     "start_time": {
       "type": "string",
       "description": "Appointment start time in ISO 8601 format with timezone offset, for example 2026-04-03T10:00:00+02:00."
     },
-    "duration_minutes": {
-      "type": "integer",
-      "description": "Appointment duration in minutes. Defaults to 30 if not provided."
-    },
     "customer_name": {
       "type": "string",
-      "description": "Full name of the customer who is booking the appointment."
+      "description": "Full name of the patient who is booking the appointment."
     },
     "customer_phone": {
       "type": "string",
-      "description": "Customer phone number in international format when available."
+      "description": "Patient phone number in international format when available."
     },
     "customer_email": {
       "type": "string",
-      "description": "Customer email address when available."
-    },
-    "service": {
-      "type": "string",
-      "description": "Service type being booked, for example intro_call or consultation."
+      "description": "Patient email address when available."
     },
     "notes": {
       "type": "string",

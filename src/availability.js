@@ -49,23 +49,61 @@ function getAppointmentsForDay(appointments, date) {
   return appointments.filter((appointment) => appointment.start_time.startsWith(dateOnly));
 }
 
-function generateSlotsForDate(date, durationMinutes, appointments) {
-  const businessHours = getBusinessHoursForDate(date);
+function getServiceConfig(serviceName) {
+  if (!serviceName || !CONFIG.services[serviceName]) {
+    return null;
+  }
+  return CONFIG.services[serviceName];
+}
 
-  if (!businessHours) {
-    return [];
+function getValidServiceNames() {
+  return Object.keys(CONFIG.services);
+}
+
+function validateService(serviceName) {
+  if (!serviceName) {
+    return {
+      ok: false,
+      error: `Missing required field: service. Valid values: ${getValidServiceNames().join(", ")}`
+    };
   }
 
-  const [startTime, endTime] = businessHours;
-  const startMinutes = parseMinutes(startTime);
-  const endMinutes = parseMinutes(endTime);
+  if (!getServiceConfig(serviceName)) {
+    return {
+      ok: false,
+      error: `Unknown service: ${serviceName}. Valid values: ${getValidServiceNames().join(", ")}`
+    };
+  }
+
+  return { ok: true };
+}
+
+function isTimeInServiceWindows(serviceConfig, requestedStart, requestedEnd) {
+  for (const [windowStart, windowEnd] of serviceConfig.timeWindows) {
+    const dayStart = setTimeForDate(requestedStart, windowStart);
+    const dayEnd = setTimeForDate(requestedStart, windowEnd);
+    if (requestedStart >= dayStart && requestedEnd <= dayEnd) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function getServiceTimeWindowsDescription(serviceConfig) {
+  return serviceConfig.timeWindows
+    .map(([start, end]) => `${start}–${end}`)
+    .join(", ");
+}
+
+function generateSlotsForWindow(date, windowStart, windowEnd, durationMinutes, intervalMinutes, appointmentsForDay) {
+  const startMinutes = parseMinutes(windowStart);
+  const endMinutes = parseMinutes(windowEnd);
   const slots = [];
-  const appointmentsForDay = getAppointmentsForDay(appointments, date);
 
   for (
     let currentMinutes = startMinutes;
     currentMinutes + durationMinutes <= endMinutes;
-    currentMinutes += CONFIG.slotIntervalMinutes
+    currentMinutes += intervalMinutes
   ) {
     const dateParts = getTimeZoneParts(date, CONFIG.timezone);
     const slotStart = makeDateInTimeZone({
@@ -95,6 +133,67 @@ function generateSlotsForDate(date, durationMinutes, appointments) {
   return slots;
 }
 
+function generateSlotsForService(date, serviceName, appointments) {
+  const businessHours = getBusinessHoursForDate(date);
+  if (!businessHours) return [];
+
+  const serviceConfig = getServiceConfig(serviceName);
+  if (!serviceConfig) return [];
+
+  const appointmentsForDay = getAppointmentsForDay(appointments, date);
+
+  if (serviceConfig.maxPerDay !== null) {
+    const existingCount = appointmentsForDay.filter((a) => a.service === serviceName).length;
+    if (existingCount >= serviceConfig.maxPerDay) return [];
+  }
+
+  const allSlots = [];
+
+  for (const [windowStart, windowEnd] of serviceConfig.timeWindows) {
+    const windowSlots = generateSlotsForWindow(
+      date, windowStart, windowEnd,
+      serviceConfig.durationMinutes,
+      serviceConfig.intervalMinutes,
+      appointmentsForDay
+    );
+    allSlots.push(...windowSlots);
+  }
+
+  return allSlots.map((slot, index) => ({
+    ...slot,
+    order_number: index + 1
+  }));
+}
+
+function generateSlotsForDate(date, durationMinutes, appointments) {
+  const businessHours = getBusinessHoursForDate(date);
+  if (!businessHours) return [];
+
+  const [startTime, endTime] = businessHours;
+  const appointmentsForDay = getAppointmentsForDay(appointments, date);
+
+  return generateSlotsForWindow(
+    date, startTime, endTime,
+    durationMinutes, CONFIG.slotIntervalMinutes,
+    appointmentsForDay
+  );
+}
+
+function findNextAvailableSlotsForService(startDate, serviceName, appointments) {
+  const suggestions = [];
+  let cursor = getStartOfDayInTimeZone(startDate, CONFIG.timezone);
+  let daysChecked = 0;
+
+  while (suggestions.length < CONFIG.maxSuggestions && daysChecked < CONFIG.availabilitySearchDays) {
+    const slots = generateSlotsForService(cursor, serviceName, appointments);
+    suggestions.push(...slots);
+    cursor = addDaysInTimeZone(cursor, 1, CONFIG.timezone);
+    daysChecked++;
+  }
+
+  return suggestions.slice(0, CONFIG.maxSuggestions);
+}
+
 function findNextAvailableSlots(startDate, durationMinutes, appointments) {
   const suggestions = [];
   let cursor = getStartOfDayInTimeZone(startDate, CONFIG.timezone);
@@ -106,22 +205,6 @@ function findNextAvailableSlots(startDate, durationMinutes, appointments) {
   }
 
   return suggestions.slice(0, CONFIG.maxSuggestions);
-}
-
-function getValidatedDurationMinutes(payload) {
-  const durationMinutes = Number(payload.duration_minutes) || CONFIG.defaultDurationMinutes;
-
-  if (!Number.isInteger(durationMinutes) || durationMinutes <= 0) {
-    return {
-      ok: false,
-      error: "duration_minutes must be a positive integer."
-    };
-  }
-
-  return {
-    ok: true,
-    durationMinutes
-  };
 }
 
 function getSearchWindow(anchorDate) {
@@ -149,11 +232,15 @@ function createAppointmentId() {
 }
 
 async function checkAvailability(payload) {
-  const durationResult = getValidatedDurationMinutes(payload);
+  const serviceName = payload.service;
+  const serviceValidation = validateService(serviceName);
 
-  if (!durationResult.ok) {
-    return durationResult;
+  if (!serviceValidation.ok) {
+    return serviceValidation;
   }
+
+  const serviceConfig = getServiceConfig(serviceName);
+  const durationMinutes = serviceConfig.durationMinutes;
 
   if (!payload.date && !payload.start_time) {
     return {
@@ -161,8 +248,6 @@ async function checkAvailability(payload) {
       error: "Missing required field: date or start_time"
     };
   }
-
-  const { durationMinutes } = durationResult;
 
   if (payload.start_time) {
     const requestedStart = new Date(payload.start_time);
@@ -183,33 +268,46 @@ async function checkAvailability(payload) {
         ok: true,
         available: false,
         reason: "Outside business days",
+        service: serviceName,
+        patient_info: serviceConfig.patientInfo,
         provider: CONFIG.calendarProvider,
         requested_start: formatDateTimeLocal(requestedStart),
-        next_available_slots: findNextAvailableSlots(requestedStart, durationMinutes, appointments)
+        next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
       };
     }
 
-    const [startTime, endTime] = businessHours;
-    const dayStart = setTimeForDate(requestedStart, startTime);
-    const dayEnd = setTimeForDate(requestedStart, endTime);
-    const insideBusinessHours = requestedStart >= dayStart && requestedEnd <= dayEnd;
-
-    if (!insideBusinessHours) {
+    if (!isTimeInServiceWindows(serviceConfig, requestedStart, requestedEnd)) {
       return {
         ok: true,
         available: false,
-        reason: "Outside business hours",
+        reason: `Outside time window for ${serviceConfig.label}. Available: ${getServiceTimeWindowsDescription(serviceConfig)}.`,
+        service: serviceName,
+        patient_info: serviceConfig.patientInfo,
         provider: CONFIG.calendarProvider,
         requested_start: formatDateTimeLocal(requestedStart),
-        business_hours: {
-          start: startTime,
-          end: endTime
-        },
-        next_available_slots: findNextAvailableSlots(requestedStart, durationMinutes, appointments)
+        service_time_windows: getServiceTimeWindowsDescription(serviceConfig),
+        next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
       };
     }
 
     const appointmentsForDay = getAppointmentsForDay(appointments, requestedStart);
+
+    if (serviceConfig.maxPerDay !== null) {
+      const serviceCount = appointmentsForDay.filter((a) => a.service === serviceName).length;
+      if (serviceCount >= serviceConfig.maxPerDay) {
+        return {
+          ok: true,
+          available: false,
+          reason: `Maximum ${serviceConfig.maxPerDay} ${serviceConfig.label} per day already booked.`,
+          service: serviceName,
+          patient_info: serviceConfig.patientInfo,
+          provider: CONFIG.calendarProvider,
+          requested_start: formatDateTimeLocal(requestedStart),
+          next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
+        };
+      }
+    }
+
     const isBusy = appointmentsForDay.some((appointment) => {
       return overlaps(
         requestedStart,
@@ -222,13 +320,15 @@ async function checkAvailability(payload) {
     return {
       ok: true,
       available: !isBusy,
+      service: serviceName,
+      patient_info: serviceConfig.patientInfo,
       provider: CONFIG.calendarProvider,
       requested_start: formatDateTimeLocal(requestedStart),
       requested_end: formatDateTimeLocal(requestedEnd),
       duration_minutes: durationMinutes,
       timezone: CONFIG.timezone,
       next_available_slots: isBusy
-        ? findNextAvailableSlots(requestedStart, durationMinutes, appointments)
+        ? findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
         : []
     };
   }
@@ -251,12 +351,14 @@ async function checkAvailability(payload) {
   }
 
   const appointments = await getStoredAppointments({ anchorDate: requestedDate });
-  const availableSlots = generateSlotsForDate(requestedDate, durationMinutes, appointments);
+  const availableSlots = generateSlotsForService(requestedDate, serviceName, appointments);
   const businessHours = getBusinessHoursForDate(requestedDate);
 
   return {
     ok: true,
     available: availableSlots.length > 0,
+    service: serviceName,
+    patient_info: serviceConfig.patientInfo,
     provider: CONFIG.calendarProvider,
     date: payload.date,
     duration_minutes: durationMinutes,
@@ -264,10 +366,11 @@ async function checkAvailability(payload) {
     business_hours: businessHours
       ? { start: businessHours[0], end: businessHours[1] }
       : null,
+    service_time_windows: getServiceTimeWindowsDescription(serviceConfig),
     available_slots: availableSlots,
     next_available_slots: availableSlots.length > 0
       ? availableSlots.slice(0, CONFIG.maxSuggestions)
-      : findNextAvailableSlots(requestedDate, durationMinutes, appointments)
+      : findNextAvailableSlotsForService(requestedDate, serviceName, appointments)
   };
 }
 
@@ -279,16 +382,19 @@ async function bookAppointment(payload) {
     };
   }
 
-  const provider = getCalendarProvider();
-  const durationResult = getValidatedDurationMinutes(payload);
+  const serviceName = payload.service;
+  const serviceValidation = validateService(serviceName);
 
-  if (!durationResult.ok) {
-    return durationResult;
+  if (!serviceValidation.ok) {
+    return serviceValidation;
   }
+
+  const serviceConfig = getServiceConfig(serviceName);
+  const provider = getCalendarProvider();
 
   const availabilityResult = await checkAvailability({
     start_time: payload.start_time,
-    duration_minutes: durationResult.durationMinutes
+    service: serviceName
   });
 
   if (!availabilityResult.ok) {
@@ -299,6 +405,7 @@ async function bookAppointment(payload) {
     return {
       ok: false,
       error: "Requested slot is not available.",
+      service: serviceName,
       requested_start: availabilityResult.requested_start,
       next_available_slots: availabilityResult.next_available_slots
     };
@@ -309,7 +416,7 @@ async function bookAppointment(payload) {
     customer_name: payload.customer_name || null,
     customer_phone: payload.customer_phone || null,
     customer_email: payload.customer_email || null,
-    service: payload.service || "general_consultation",
+    service: serviceName,
     start_time: availabilityResult.requested_start,
     end_time: availabilityResult.requested_end,
     notes: payload.notes || null,
@@ -322,6 +429,8 @@ async function bookAppointment(payload) {
   return {
     ok: true,
     booked: true,
+    service: serviceName,
+    patient_info: serviceConfig.patientInfo,
     provider: CONFIG.calendarProvider,
     appointment: storedAppointment
   };
@@ -363,7 +472,9 @@ module.exports = {
   cancelAppointment,
   checkAvailability,
   findNextAvailableSlots,
+  findNextAvailableSlotsForService,
   formatDateTimeLocal,
   generateSlotsForDate,
+  generateSlotsForService,
   getStoredAppointments
 };
