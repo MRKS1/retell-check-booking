@@ -369,7 +369,7 @@ async function checkAvailability(payload) {
     service_time_windows: getServiceTimeWindowsDescription(serviceConfig),
     available_slots: availableSlots,
     next_available_slots: availableSlots.length > 0
-      ? availableSlots.slice(0, CONFIG.maxSuggestions)
+      ? []
       : findNextAvailableSlotsForService(requestedDate, serviceName, appointments)
   };
 }

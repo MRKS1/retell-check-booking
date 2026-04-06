@@ -7,6 +7,12 @@ services:
     startCommand: npm start
     envVars:
       - key: CALENDAR_PROVIDER
-        value: sqlite
+        sync: false
+      - key: GOOGLE_CALENDAR_ID
+        sync: false
+      - key: GOOGLE_SERVICE_ACCOUNT_EMAIL
+        sync: false
+      - key: GOOGLE_PRIVATE_KEY
+        sync: false
       - key: NODE_VERSION
         value: 24.14.0
