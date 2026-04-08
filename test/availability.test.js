@@ -252,6 +252,16 @@ test("cancels an existing appointment", async () => {
 });
 
 test("rejects invalid payloads", async () => {
+  const result = await checkAvailability({
+    service: "vstupne_vysetrenie"
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.available, false);
+  assert.ok(Array.isArray(result.next_available_slots));
+  assert.ok(result.next_available_slots.length > 0);
+});
+
+test("rejects truly invalid payload without service", async () => {
   const result = await checkAvailability({});
   assert.equal(result.ok, false);
 });

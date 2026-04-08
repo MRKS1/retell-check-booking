@@ -251,9 +251,20 @@ async function checkAvailability(payload) {
   const durationMinutes = serviceConfig.durationMinutes;
 
   if (!payload.date && !payload.start_time) {
+    const now = new Date();
+    const appointments = await getStoredAppointments({ anchorDate: now });
+
     return {
-      ok: false,
-      error: "Missing required field: date or start_time"
+      ok: true,
+      available: false,
+      reason: "No exact date/time provided. Returning next available slots.",
+      service: serviceName,
+      patient_info: serviceConfig.patientInfo,
+      provider: CONFIG.calendarProvider,
+      duration_minutes: durationMinutes,
+      timezone: CONFIG.timezone,
+      available_slots: [],
+      next_available_slots: findNextAvailableSlotsForService(now, serviceName, appointments)
     };
   }
 
