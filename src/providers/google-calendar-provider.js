@@ -192,10 +192,12 @@ const googleCalendarProvider = {
           : appointment.service,
         description: buildEventDescription(appointment),
         start: {
-          dateTime: appointment.start_time
+          dateTime: appointment.start_time,
+          timeZone: "Europe/Bratislava"
         },
         end: {
-          dateTime: appointment.end_time
+          dateTime: appointment.end_time,
+          timeZone: "Europe/Bratislava"
         },
         extendedProperties: {
           private: {

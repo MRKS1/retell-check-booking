@@ -35,6 +35,14 @@ function formatDateOnly(date) {
   return formatDateOnlyInTimeZone(date, CONFIG.timezone);
 }
 
+function isDateTimeInPast(date) {
+  return date.getTime() < Date.now();
+}
+
+function isDateInPastForClinicDay(date) {
+  return formatDateOnly(date) < formatDateOnly(new Date());
+}
+
 function overlaps(startA, endA, startB, endB) {
   return startA < endB && endA > startB;
 }
@@ -250,12 +258,35 @@ async function checkAvailability(payload) {
   }
 
   if (payload.start_time) {
+    if (!String(payload.start_time).match(/([+-]\d{2}:\d{2}|Z)$/)) {
+      return {
+        ok: false,
+        error: `Invalid start_time: timezone offset is required (e.g. '2026-04-10T09:00:00+02:00'). Received: ${payload.start_time}`
+      };
+    }
+
     const requestedStart = new Date(payload.start_time);
 
     if (Number.isNaN(requestedStart.getTime())) {
       return {
         ok: false,
         error: "Invalid start_time format. Use ISO 8601."
+      };
+    }
+
+    if (isDateTimeInPast(requestedStart)) {
+      const now = new Date();
+      const appointments = await getStoredAppointments({ anchorDate: now });
+
+      return {
+        ok: true,
+        available: false,
+        reason: "Requested start_time is in the past.",
+        service: serviceName,
+        patient_info: serviceConfig.patientInfo,
+        provider: CONFIG.calendarProvider,
+        requested_start: formatDateTimeLocal(requestedStart),
+        next_available_slots: findNextAvailableSlotsForService(now, serviceName, appointments)
       };
     }
 
@@ -347,6 +378,27 @@ async function checkAvailability(payload) {
     return {
       ok: false,
       error: "Invalid date format. Use YYYY-MM-DD."
+    };
+  }
+
+  if (isDateInPastForClinicDay(requestedDate)) {
+    const now = new Date();
+    const appointments = await getStoredAppointments({ anchorDate: now });
+
+    return {
+      ok: true,
+      available: false,
+      reason: "Requested date is in the past.",
+      service: serviceName,
+      patient_info: serviceConfig.patientInfo,
+      provider: CONFIG.calendarProvider,
+      date: payload.date,
+      duration_minutes: durationMinutes,
+      timezone: CONFIG.timezone,
+      business_hours: null,
+      service_time_windows: getServiceTimeWindowsDescription(serviceConfig),
+      available_slots: [],
+      next_available_slots: findNextAvailableSlotsForService(now, serviceName, appointments)
     };
   }
 

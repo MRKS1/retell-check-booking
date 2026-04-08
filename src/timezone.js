@@ -43,6 +43,11 @@ function getTimeZoneOffsetMinutes(date, timeZone) {
   const match = offsetName.match(OFFSET_PATTERN);
 
   if (!match || !match.groups || !match.groups.sign) {
+    console.warn(
+      `[TIMEZONE_PARSE_WARN] Failed to parse offset from Intl formatter output: "${offsetName}"`,
+      `| date: ${date instanceof Date ? date.toISOString() : date}`,
+      `| timezone: ${timeZone}`
+    );
     return 0;
   }
 
