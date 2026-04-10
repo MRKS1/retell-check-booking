@@ -1,6 +1,20 @@
 const fs = require("fs");
 const path = require("path");
 const { DatabaseSync } = require("node:sqlite");
+const {
+  activatePendingAppointmentRegistryEntryMirror,
+  clearMirrorData,
+  deleteAppointmentRegistryMirror,
+  finalizeRescheduleTransitionMirror,
+  initializeMirrorSchema,
+  markAppointmentMirrorCancelled,
+  markAppointmentRegistryCancelledMirror,
+  markAppointmentRegistryRescheduledMirror,
+  markAppointmentRegistryRollbackFailedMirror,
+  updateAppointmentRegistrySmsMirror,
+  upsertAppointmentMirror,
+  upsertAppointmentRegistryMirror
+} = require("./supabase-mirror");
 
 const DATA_DIR = path.join(__dirname, "data");
 const DATABASE_PATH = process.env.APPOINTMENTS_DB_PATH || path.join(DATA_DIR, "appointments.db");
@@ -19,6 +33,9 @@ function getDatabase() {
 
 function initializeDatabase() {
   const db = getDatabase();
+
+  // Initialize optional Postgres mirror schema in the background.
+  initializeMirrorSchema().catch(() => {});
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS appointments (
@@ -177,6 +194,8 @@ function createAppointment(appointment) {
       appointment.status,
       appointment.created_at
     );
+
+  upsertAppointmentMirror({ provider: "sqlite", appointment });
 }
 
 function cancelAppointmentById(appointmentId) {
@@ -189,6 +208,10 @@ function cancelAppointmentById(appointmentId) {
     `)
     .run(appointmentId);
 
+  if (info.changes > 0) {
+    markAppointmentMirrorCancelled({ appointmentId });
+  }
+
   return info.changes > 0;
 }
 
@@ -197,6 +220,7 @@ function resetDatabase() {
   const db = getDatabase();
   db.exec("DELETE FROM appointments;");
   db.exec("DELETE FROM appointment_registry;");
+  clearMirrorData();
 }
 
 function createAppointmentRegistryEntry(entry) {
@@ -241,6 +265,8 @@ function createAppointmentRegistryEntry(entry) {
       entry.sms_delivery_status || null,
       entry.sms_last_error || null
     );
+
+  upsertAppointmentRegistryMirror(entry);
 }
 
 function deleteAppointmentRegistryEntry(appointmentId) {
@@ -250,6 +276,8 @@ function deleteAppointmentRegistryEntry(appointmentId) {
       WHERE appointment_id = ?
     `)
     .run(appointmentId);
+
+  deleteAppointmentRegistryMirror(appointmentId);
 }
 
 function getAppointmentRegistryById(appointmentId) {
@@ -337,6 +365,13 @@ function updateAppointmentRegistrySmsDelivery({ appointmentId, smsDeliveryStatus
       updatedAt,
       appointmentId
     );
+
+  updateAppointmentRegistrySmsMirror({
+    appointmentId,
+    smsDeliveryStatus,
+    smsLastError,
+    updatedAt
+  });
 }
 
 function markAppointmentRegistryCancelled({ appointmentId, updatedAt }) {
@@ -350,6 +385,10 @@ function markAppointmentRegistryCancelled({ appointmentId, updatedAt }) {
         AND status = 'confirmed'
     `)
     .run(updatedAt, appointmentId);
+
+  if (info.changes > 0) {
+    markAppointmentRegistryCancelledMirror({ appointmentId, updatedAt });
+  }
 
   return info.changes > 0;
 }
@@ -367,6 +406,14 @@ function markAppointmentRegistryRescheduled({ appointmentId, replacedByAppointme
     `)
     .run(replacedByAppointmentId, updatedAt, appointmentId);
 
+  if (info.changes > 0) {
+    markAppointmentRegistryRescheduledMirror({
+      appointmentId,
+      replacedByAppointmentId,
+      updatedAt
+    });
+  }
+
   return info.changes > 0;
 }
 
@@ -380,6 +427,10 @@ function activatePendingAppointmentRegistryEntry({ appointmentId, updatedAt }) {
         AND status = 'pending_reschedule'
     `)
     .run(updatedAt, appointmentId);
+
+  if (info.changes > 0) {
+    activatePendingAppointmentRegistryEntryMirror({ appointmentId, updatedAt });
+  }
 
   return info.changes > 0;
 }
@@ -395,6 +446,12 @@ function markAppointmentRegistryRollbackFailed({ appointmentId, updatedAt, error
       WHERE appointment_id = ?
     `)
     .run(errorMessage || null, updatedAt, appointmentId);
+
+  markAppointmentRegistryRollbackFailedMirror({
+    appointmentId,
+    updatedAt,
+    errorMessage
+  });
 }
 
 function listAppointmentRegistryEntries() {
@@ -465,6 +522,12 @@ function finalizeRescheduleTransition({ oldAppointmentId, newAppointmentId, upda
     db.exec("ROLLBACK;");
     throw error;
   }
+
+  finalizeRescheduleTransitionMirror({
+    oldAppointmentId,
+    newAppointmentId,
+    updatedAt
+  });
 }
 
 module.exports = {

@@ -15,5 +15,11 @@ services:
         sync: false
       - key: GOOGLE_PRIVATE_KEY
         sync: false
+      - key: DATABASE_PROVIDER
+        sync: false
+      - key: DATABASE_URL
+        sync: false
+      - key: MANAGE_CODE_SECRET
+        sync: false
       - key: NODE_VERSION
         value: 24.14.0

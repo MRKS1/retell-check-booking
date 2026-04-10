@@ -45,6 +45,13 @@ Pre Google provider budes potrebovat:
 - `GOOGLE_SERVICE_ACCOUNT_EMAIL`
 - `GOOGLE_PRIVATE_KEY`
 
+Pre volitelny Supabase mirror (na admin prehlad rezervacii) nastav:
+
+- `DATABASE_PROVIDER=postgres`
+- `DATABASE_URL=postgresql://...` (Supabase transaction pooler URI)
+
+Poznamka: Google Calendar ostava hlavny booking kanal. Supabase sa pouziva ako mirror evidencie.
+
 ## Google Calendar flow
 
 Odporucany setup je:
