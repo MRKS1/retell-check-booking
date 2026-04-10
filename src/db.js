@@ -35,7 +35,7 @@ function initializeDatabase() {
   const db = getDatabase();
 
   // Initialize optional Postgres mirror schema in the background.
-  initializeMirrorSchema().catch(() => {});
+  initializeMirrorSchema().catch(() => { });
 
   db.exec(`
     CREATE TABLE IF NOT EXISTS appointments (
