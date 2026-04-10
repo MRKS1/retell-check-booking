@@ -11,7 +11,9 @@ Node.js booking backend pripraveny pre Retell AI, Render deploy a 2 calendar pro
 - `GET /appointments`
 - `POST /check-available-slots`
 - `POST /book-appointment`
+- `POST /lookup-booking-by-manage-code`
 - `POST /cancel-appointment`
+- `POST /reschedule-appointment`
 
 Stare `POST /check-availability` ostava ako kompatibilny alias.
 
@@ -67,7 +69,9 @@ Retell potom napojis na:
 
 - `https://your-service.onrender.com/check-available-slots`
 - `https://your-service.onrender.com/book-appointment`
+- `https://your-service.onrender.com/lookup-booking-by-manage-code`
 - `https://your-service.onrender.com/cancel-appointment`
+- `https://your-service.onrender.com/reschedule-appointment`
 
 ## Test requesty
 
@@ -93,7 +97,22 @@ curl -X POST http://localhost:3000/book-appointment \
     "customer_name": "Jane Doe",
     "customer_phone": "+421900000000",
     "customer_email": "jane@example.com",
-    "service": "intro_call"
+    "service": "vstupne_vysetrenie"
+  }'
+```
+
+Book response now returns:
+
+- `manage_code`
+- `manage_code_delivery`
+
+Lookup:
+
+```bash
+curl -X POST http://localhost:3000/lookup-booking-by-manage-code \
+  -H "Content-Type: application/json" \
+  -d '{
+    "manage_code": "42816357"
   }'
 ```
 
@@ -103,7 +122,18 @@ Cancel:
 curl -X POST http://localhost:3000/cancel-appointment \
   -H "Content-Type: application/json" \
   -d '{
-    "appointment_id": "appt_123"
+    "manage_code": "42816357"
+  }'
+```
+
+Reschedule:
+
+```bash
+curl -X POST http://localhost:3000/reschedule-appointment \
+  -H "Content-Type: application/json" \
+  -d '{
+    "manage_code": "42816357",
+    "new_start_time": "2026-04-03T10:20:00+02:00"
   }'
 ```
 
@@ -113,5 +143,7 @@ Schema subory pre Retell su v priecinku `retell/`:
 
 - `check_availability.schema.json`
 - `book_appointment.schema.json`
+- `lookup_booking_by_manage_code.schema.json`
 - `cancel_appointment.schema.json`
+- `reschedule_appointment.schema.json`
 - `setup.md`

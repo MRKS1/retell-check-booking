@@ -3,13 +3,17 @@ const {
   bookAppointment,
   cancelAppointment,
   checkAvailability,
-  getStoredAppointments
+  getStoredAppointments,
+  lookupBookingByManageCode,
+  rescheduleAppointment
 } = require("./availability");
 const { initializeCalendarProvider } = require("./providers");
 const { extractFunctionArgs, formatRetellResponse } = require("./retell");
+const { consumeManageCodeRateLimit } = require("./rate-limit");
 const { CONFIG } = require("./config");
 
 const PORT = process.env.PORT || 3000;
+const HOST = process.env.HOST || "0.0.0.0";
 
 initializeCalendarProvider();
 
@@ -18,6 +22,15 @@ function sendJson(response, statusCode, payload) {
     "Content-Type": "application/json"
   });
   response.end(JSON.stringify(payload, null, 2));
+}
+
+function buildHealthPayload() {
+  return {
+    ok: true,
+    service: "check_availability",
+    provider: CONFIG.calendarProvider,
+    timestamp: new Date().toISOString()
+  };
 }
 
 function parseRequestBody(request) {
@@ -60,14 +73,54 @@ async function handleFunctionResponse(response, requestBody, defaultFunctionName
   sendJson(response, statusCode, payload);
 }
 
+function getRequestIpAddress(request) {
+  const forwardedFor = request.headers["x-forwarded-for"];
+
+  if (typeof forwardedFor === "string" && forwardedFor.length > 0) {
+    return forwardedFor.split(",")[0].trim();
+  }
+
+  return request.socket && request.socket.remoteAddress
+    ? request.socket.remoteAddress
+    : null;
+}
+
+async function handleManagedFunctionResponse(request, response, defaultFunctionName, handler) {
+  const body = await parseRequestBody(request);
+  const context = extractFunctionArgs(body);
+  const limitResult = consumeManageCodeRateLimit({
+    endpoint: defaultFunctionName,
+    callId: context.call && context.call.call_id ? context.call.call_id : null,
+    ipAddress: getRequestIpAddress(request)
+  });
+
+  if (!limitResult.ok) {
+    const result = {
+      ok: false,
+      error: "Too many manage_code attempts. Please try again later."
+    };
+    const statusCode = context.isRetellRequest ? 200 : 429;
+    const payload = context.isRetellRequest
+      ? formatRetellResponse(
+        context.functionName || defaultFunctionName,
+        result,
+        { call: context.call }
+      )
+      : result;
+
+    sendJson(response, statusCode, payload);
+    return;
+  }
+
+  await handleFunctionResponse(response, body, defaultFunctionName, handler);
+}
+
 const server = http.createServer(async (request, response) => {
-  if (request.method === "GET" && request.url === "/health") {
-    sendJson(response, 200, {
-      ok: true,
-      service: "check_availability",
-      provider: CONFIG.calendarProvider,
-      timestamp: new Date().toISOString()
-    });
+  if (
+    request.method === "GET" &&
+    (request.url === "/" || request.url === "/health")
+  ) {
+    sendJson(response, 200, buildHealthPayload());
     return;
   }
 
@@ -102,12 +155,45 @@ const server = http.createServer(async (request, response) => {
 
   if (request.method === "POST" && request.url === "/cancel-appointment") {
     try {
-      const body = await parseRequestBody(request);
-      await handleFunctionResponse(response, body, "cancel_appointment", cancelAppointment);
+      await handleManagedFunctionResponse(request, response, "cancel_appointment", cancelAppointment);
     } catch (error) {
       sendJson(response, 400, {
         ok: false,
-        error: error.message
+        error: "Unable to process the request right now. Please try again later."
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/lookup-booking-by-manage-code") {
+    try {
+      await handleManagedFunctionResponse(
+        request,
+        response,
+        "lookup_booking_by_manage_code",
+        lookupBookingByManageCode
+      );
+    } catch (error) {
+      sendJson(response, 400, {
+        ok: false,
+        error: "Unable to process the request right now. Please try again later."
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/reschedule-appointment") {
+    try {
+      await handleManagedFunctionResponse(
+        request,
+        response,
+        "reschedule_appointment",
+        rescheduleAppointment
+      );
+    } catch (error) {
+      sendJson(response, 400, {
+        ok: false,
+        error: "Unable to process the request right now. Please try again later."
       });
     }
     return;
@@ -128,6 +214,6 @@ const server = http.createServer(async (request, response) => {
   });
 });
 
-server.listen(PORT, () => {
-  console.log(`Server running on http://localhost:${PORT}`);
+server.listen(PORT, HOST, () => {
+  console.log(`Server running on http://${HOST}:${PORT}`);
 });

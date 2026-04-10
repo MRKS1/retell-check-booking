@@ -1,5 +1,21 @@
 const { CONFIG } = require("./config");
+const {
+  createAppointmentRegistryEntry,
+  deleteAppointmentRegistryEntry,
+  finalizeRescheduleTransition,
+  getAppointmentRegistryById,
+  getManageableAppointmentByCodeHash,
+  markAppointmentRegistryCancelled,
+  markAppointmentRegistryRollbackFailed,
+  updateAppointmentRegistrySmsDelivery
+} = require("./db");
+const {
+  createManageCode,
+  hashManageCode,
+  validateManageCode
+} = require("./manage-codes");
 const { getCalendarProvider } = require("./providers");
+const { deliverManageCode } = require("./sms");
 const {
   addDaysInTimeZone,
   formatDateOnlyInTimeZone,
@@ -61,6 +77,7 @@ function getServiceConfig(serviceName) {
   if (!serviceName || !CONFIG.services[serviceName]) {
     return null;
   }
+
   return CONFIG.services[serviceName];
 }
 
@@ -86,6 +103,74 @@ function validateService(serviceName) {
   return { ok: true };
 }
 
+function validateDateInput(value) {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      error: "Invalid date format. Use YYYY-MM-DD."
+    };
+  }
+
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    return {
+      ok: false,
+      error: "Invalid date format. Use YYYY-MM-DD."
+    };
+  }
+
+  return { ok: true };
+}
+
+function validateStartTimeInput(value, fieldName = "start_time") {
+  if (value === undefined || value === null) {
+    return { ok: true };
+  }
+
+  if (typeof value !== "string") {
+    return {
+      ok: false,
+      error: `Invalid ${fieldName} format. Use ISO 8601.`
+    };
+  }
+
+  if (!value.match(/([+-]\d{2}:\d{2}|Z)$/)) {
+    return {
+      ok: false,
+      error: `Invalid ${fieldName}: timezone offset is required (e.g. '2026-04-10T09:00:00+02:00'). Received: ${value}`
+    };
+  }
+
+  const parsed = new Date(value);
+
+  if (Number.isNaN(parsed.getTime())) {
+    return {
+      ok: false,
+      error: `Invalid ${fieldName} format. Use ISO 8601.`
+    };
+  }
+
+  return {
+    ok: true,
+    value,
+    parsed
+  };
+}
+
+function isSameInstant(isoA, isoB) {
+  const a = new Date(isoA);
+  const b = new Date(isoB);
+
+  if (Number.isNaN(a.getTime()) || Number.isNaN(b.getTime())) {
+    return false;
+  }
+
+  return a.getTime() === b.getTime();
+}
+
 function isTimeInServiceWindows(serviceConfig, requestedStart, requestedEnd) {
   for (const [windowStart, windowEnd] of serviceConfig.timeWindows) {
     const dayStart = setTimeForDate(requestedStart, windowStart);
@@ -94,6 +179,7 @@ function isTimeInServiceWindows(serviceConfig, requestedStart, requestedEnd) {
       return true;
     }
   }
+
   return false;
 }
 
@@ -101,6 +187,18 @@ function getServiceTimeWindowsDescription(serviceConfig) {
   return serviceConfig.timeWindows
     .map(([start, end]) => `${start}–${end}`)
     .join(", ");
+}
+
+function filterExcludedAppointments(appointments, excludedAppointmentIds = []) {
+  const excludedIds = new Set((excludedAppointmentIds || []).filter(Boolean));
+
+  if (excludedIds.size === 0) {
+    return appointments;
+  }
+
+  return appointments.filter((appointment) => {
+    return !excludedIds.has(appointment.id) && !excludedIds.has(appointment.provider_appointment_id);
+  });
 }
 
 function generateSlotsForWindow(date, windowStart, windowEnd, durationMinutes, intervalMinutes, appointmentsForDay) {
@@ -151,7 +249,7 @@ function generateSlotsForService(date, serviceName, appointments) {
   const appointmentsForDay = getAppointmentsForDay(appointments, date);
 
   if (serviceConfig.maxPerDay !== null) {
-    const existingCount = appointmentsForDay.filter((a) => a.service === serviceName).length;
+    const existingCount = appointmentsForDay.filter((appointment) => appointment.service === serviceName).length;
     if (existingCount >= serviceConfig.maxPerDay) return [];
   }
 
@@ -159,7 +257,9 @@ function generateSlotsForService(date, serviceName, appointments) {
 
   for (const [windowStart, windowEnd] of serviceConfig.timeWindows) {
     const windowSlots = generateSlotsForWindow(
-      date, windowStart, windowEnd,
+      date,
+      windowStart,
+      windowEnd,
       serviceConfig.durationMinutes,
       serviceConfig.intervalMinutes,
       appointmentsForDay
@@ -181,8 +281,11 @@ function generateSlotsForDate(date, durationMinutes, appointments) {
   const appointmentsForDay = getAppointmentsForDay(appointments, date);
 
   return generateSlotsForWindow(
-    date, startTime, endTime,
-    durationMinutes, CONFIG.slotIntervalMinutes,
+    date,
+    startTime,
+    endTime,
+    durationMinutes,
+    CONFIG.slotIntervalMinutes,
     appointmentsForDay
   );
 }
@@ -225,8 +328,8 @@ function getSearchWindow(anchorDate) {
   };
 }
 
-async function getStoredAppointments({ anchorDate = new Date() } = {}) {
-  const provider = getCalendarProvider();
+async function getStoredAppointments({ anchorDate = new Date(), providerName = CONFIG.calendarProvider } = {}) {
+  const provider = getCalendarProvider(providerName);
   const searchWindow = getSearchWindow(anchorDate);
 
   return provider.listAppointments({
@@ -239,7 +342,120 @@ function createAppointmentId() {
   return `appt_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+function getProviderAppointmentId(appointment) {
+  return appointment.provider_appointment_id || appointment.id;
+}
+
+function getAppointmentLabel(serviceName) {
+  const serviceConfig = getServiceConfig(serviceName);
+  return serviceConfig ? serviceConfig.label : serviceName;
+}
+
+function buildAppointmentSummary(appointment) {
+  return `${getAppointmentLabel(appointment.service)} at ${appointment.start_time}`;
+}
+
+function buildManageCodeDeliveryResult(deliveryResult) {
+  return {
+    mode: deliveryResult.mode,
+    sms_status: deliveryResult.sms_status,
+    sms_provider: deliveryResult.provider,
+    speech: deliveryResult.speech,
+    sms_error: deliveryResult.error
+  };
+}
+
+function createRegistryEntry({ appointment, providerName, manageCodeHmac, status }) {
+  const createdAt = appointment.created_at || new Date().toISOString();
+
+  return {
+    appointment_id: appointment.id,
+    provider: providerName,
+    provider_appointment_id: getProviderAppointmentId(appointment),
+    customer_name: appointment.customer_name || null,
+    customer_phone: appointment.customer_phone || null,
+    customer_email: appointment.customer_email || null,
+    service: appointment.service,
+    start_time: appointment.start_time,
+    end_time: appointment.end_time,
+    notes: appointment.notes || null,
+    status,
+    manage_code_hmac: manageCodeHmac || null,
+    created_at: createdAt,
+    updated_at: createdAt,
+    replaced_by_appointment_id: null,
+    sms_delivery_status: null,
+    sms_last_error: null
+  };
+}
+
+async function persistManageCodeDelivery({ appointmentId, manageCode, appointment }) {
+  const deliveryResult = await deliverManageCode({
+    manageCode,
+    appointment
+  });
+
+  updateAppointmentRegistrySmsDelivery({
+    appointmentId,
+    smsDeliveryStatus: deliveryResult.sms_status,
+    smsLastError: deliveryResult.error,
+    updatedAt: new Date().toISOString()
+  });
+
+  return buildManageCodeDeliveryResult(deliveryResult);
+}
+
+function getManageCodeLookupError() {
+  return {
+    ok: false,
+    error: "No active booking found for the provided manage_code."
+  };
+}
+
+function getManageableAppointmentFromPayload(payload) {
+  const validation = validateManageCode(payload.manage_code);
+
+  if (!validation.ok) {
+    return validation;
+  }
+
+  const record = getManageableAppointmentByCodeHash(hashManageCode(validation.manageCode));
+
+  if (!record) {
+    return getManageCodeLookupError();
+  }
+
+  // Check if appointment is in pending_reschedule state
+  if (record.status === 'pending_reschedule') {
+    return {
+      ok: false,
+      error: "Appointment is currently being rescheduled. Please try again in a moment.",
+      manageable: false
+    };
+  }
+
+  return {
+    ok: true,
+    manageCode: validation.manageCode,
+    record
+  };
+}
+
+async function rollbackCreatedAppointment(providerName, appointment) {
+  const provider = getCalendarProvider(providerName);
+  const providerAppointmentId = getProviderAppointmentId(appointment);
+
+  try {
+    return await provider.cancelAppointment({
+      appointmentId: providerAppointmentId
+    });
+  } catch (error) {
+    return false;
+  }
+}
+
 async function checkAvailability(payload) {
+  const providerName = payload.provider_name || CONFIG.calendarProvider;
   const serviceName = payload.service;
   const serviceValidation = validateService(serviceName);
 
@@ -247,12 +463,26 @@ async function checkAvailability(payload) {
     return serviceValidation;
   }
 
+  const dateValidation = validateDateInput(payload.date);
+  if (!dateValidation.ok) {
+    return dateValidation;
+  }
+
+  const startTimeValidation = validateStartTimeInput(payload.start_time, "start_time");
+  if (!startTimeValidation.ok) {
+    return startTimeValidation;
+  }
+
   const serviceConfig = getServiceConfig(serviceName);
   const durationMinutes = serviceConfig.durationMinutes;
+  const excludedAppointmentIds = payload.exclude_appointment_ids || [];
 
   if (!payload.date && !payload.start_time) {
     const now = new Date();
-    const appointments = await getStoredAppointments({ anchorDate: now });
+    const appointments = filterExcludedAppointments(
+      await getStoredAppointments({ anchorDate: now, providerName }),
+      excludedAppointmentIds
+    );
 
     return {
       ok: true,
@@ -260,7 +490,7 @@ async function checkAvailability(payload) {
       reason: "No exact date/time provided. Returning next available slots.",
       service: serviceName,
       patient_info: serviceConfig.patientInfo,
-      provider: CONFIG.calendarProvider,
+      provider: providerName,
       duration_minutes: durationMinutes,
       timezone: CONFIG.timezone,
       available_slots: [],
@@ -269,25 +499,14 @@ async function checkAvailability(payload) {
   }
 
   if (payload.start_time) {
-    if (!String(payload.start_time).match(/([+-]\d{2}:\d{2}|Z)$/)) {
-      return {
-        ok: false,
-        error: `Invalid start_time: timezone offset is required (e.g. '2026-04-10T09:00:00+02:00'). Received: ${payload.start_time}`
-      };
-    }
-
-    const requestedStart = new Date(payload.start_time);
-
-    if (Number.isNaN(requestedStart.getTime())) {
-      return {
-        ok: false,
-        error: "Invalid start_time format. Use ISO 8601."
-      };
-    }
+    const requestedStart = startTimeValidation.parsed;
 
     if (isDateTimeInPast(requestedStart)) {
       const now = new Date();
-      const appointments = await getStoredAppointments({ anchorDate: now });
+      const appointments = filterExcludedAppointments(
+        await getStoredAppointments({ anchorDate: now, providerName }),
+        excludedAppointmentIds
+      );
 
       return {
         ok: true,
@@ -295,13 +514,16 @@ async function checkAvailability(payload) {
         reason: "Requested start_time is in the past.",
         service: serviceName,
         patient_info: serviceConfig.patientInfo,
-        provider: CONFIG.calendarProvider,
+        provider: providerName,
         requested_start: formatDateTimeLocal(requestedStart),
         next_available_slots: findNextAvailableSlotsForService(now, serviceName, appointments)
       };
     }
 
-    const appointments = await getStoredAppointments({ anchorDate: requestedStart });
+    const appointments = filterExcludedAppointments(
+      await getStoredAppointments({ anchorDate: requestedStart, providerName }),
+      excludedAppointmentIds
+    );
     const requestedEnd = new Date(requestedStart.getTime() + (durationMinutes * 60 * 1000));
     const businessHours = getBusinessHoursForDate(requestedStart);
 
@@ -312,7 +534,7 @@ async function checkAvailability(payload) {
         reason: "Outside business days",
         service: serviceName,
         patient_info: serviceConfig.patientInfo,
-        provider: CONFIG.calendarProvider,
+        provider: providerName,
         requested_start: formatDateTimeLocal(requestedStart),
         next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
       };
@@ -325,7 +547,7 @@ async function checkAvailability(payload) {
         reason: `Outside time window for ${serviceConfig.label}. Available: ${getServiceTimeWindowsDescription(serviceConfig)}.`,
         service: serviceName,
         patient_info: serviceConfig.patientInfo,
-        provider: CONFIG.calendarProvider,
+        provider: providerName,
         requested_start: formatDateTimeLocal(requestedStart),
         service_time_windows: getServiceTimeWindowsDescription(serviceConfig),
         next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
@@ -335,7 +557,7 @@ async function checkAvailability(payload) {
     const appointmentsForDay = getAppointmentsForDay(appointments, requestedStart);
 
     if (serviceConfig.maxPerDay !== null) {
-      const serviceCount = appointmentsForDay.filter((a) => a.service === serviceName).length;
+      const serviceCount = appointmentsForDay.filter((appointment) => appointment.service === serviceName).length;
       if (serviceCount >= serviceConfig.maxPerDay) {
         return {
           ok: true,
@@ -343,7 +565,7 @@ async function checkAvailability(payload) {
           reason: `Maximum ${serviceConfig.maxPerDay} ${serviceConfig.label} per day already booked.`,
           service: serviceName,
           patient_info: serviceConfig.patientInfo,
-          provider: CONFIG.calendarProvider,
+          provider: providerName,
           requested_start: formatDateTimeLocal(requestedStart),
           next_available_slots: findNextAvailableSlotsForService(requestedStart, serviceName, appointments)
         };
@@ -364,7 +586,7 @@ async function checkAvailability(payload) {
       available: !isBusy,
       service: serviceName,
       patient_info: serviceConfig.patientInfo,
-      provider: CONFIG.calendarProvider,
+      provider: providerName,
       requested_start: formatDateTimeLocal(requestedStart),
       requested_end: formatDateTimeLocal(requestedEnd),
       duration_minutes: durationMinutes,
@@ -394,7 +616,10 @@ async function checkAvailability(payload) {
 
   if (isDateInPastForClinicDay(requestedDate)) {
     const now = new Date();
-    const appointments = await getStoredAppointments({ anchorDate: now });
+    const appointments = filterExcludedAppointments(
+      await getStoredAppointments({ anchorDate: now, providerName }),
+      excludedAppointmentIds
+    );
 
     return {
       ok: true,
@@ -402,7 +627,7 @@ async function checkAvailability(payload) {
       reason: "Requested date is in the past.",
       service: serviceName,
       patient_info: serviceConfig.patientInfo,
-      provider: CONFIG.calendarProvider,
+      provider: providerName,
       date: payload.date,
       duration_minutes: durationMinutes,
       timezone: CONFIG.timezone,
@@ -413,7 +638,10 @@ async function checkAvailability(payload) {
     };
   }
 
-  const appointments = await getStoredAppointments({ anchorDate: requestedDate });
+  const appointments = filterExcludedAppointments(
+    await getStoredAppointments({ anchorDate: requestedDate, providerName }),
+    excludedAppointmentIds
+  );
   const availableSlots = generateSlotsForService(requestedDate, serviceName, appointments);
   const businessHours = getBusinessHoursForDate(requestedDate);
 
@@ -422,7 +650,7 @@ async function checkAvailability(payload) {
     available: availableSlots.length > 0,
     service: serviceName,
     patient_info: serviceConfig.patientInfo,
-    provider: CONFIG.calendarProvider,
+    provider: providerName,
     date: payload.date,
     duration_minutes: durationMinutes,
     timezone: CONFIG.timezone,
@@ -452,12 +680,13 @@ async function bookAppointment(payload) {
     return serviceValidation;
   }
 
+  const providerName = CONFIG.calendarProvider;
+  const provider = getCalendarProvider(providerName);
   const serviceConfig = getServiceConfig(serviceName);
-  const provider = getCalendarProvider();
-
   const availabilityResult = await checkAvailability({
     start_time: payload.start_time,
-    service: serviceName
+    service: serviceName,
+    provider_name: providerName
   });
 
   if (!availabilityResult.ok) {
@@ -474,6 +703,23 @@ async function bookAppointment(payload) {
     };
   }
 
+  // Final availability re-check to prevent race condition (check->create gap)
+  const finalCheckResult = await checkAvailability({
+    start_time: payload.start_time,
+    service: serviceName,
+    provider_name: providerName
+  });
+
+  if (!finalCheckResult.ok || !finalCheckResult.available) {
+    return {
+      ok: false,
+      error: "Requested slot was just booked by another request. Please check availability and try again.",
+      service: serviceName,
+      requested_start: availabilityResult.requested_start,
+      next_available_slots: finalCheckResult.next_available_slots || availabilityResult.next_available_slots
+    };
+  }
+
   const appointment = {
     id: createAppointmentId(),
     customer_name: payload.customer_name || null,
@@ -487,46 +733,291 @@ async function bookAppointment(payload) {
     created_at: new Date().toISOString()
   };
 
+  const manageCodeData = createManageCode();
   const storedAppointment = await provider.createAppointment(appointment);
+  const storedAppointmentWithProviderId = {
+    ...storedAppointment,
+    provider_appointment_id: getProviderAppointmentId(storedAppointment)
+  };
+
+  try {
+    createAppointmentRegistryEntry(
+      createRegistryEntry({
+        appointment: storedAppointmentWithProviderId,
+        providerName,
+        manageCodeHmac: manageCodeData.manageCodeHmac,
+        status: "confirmed"
+      })
+    );
+  } catch (error) {
+    await rollbackCreatedAppointment(providerName, storedAppointmentWithProviderId);
+    throw error;
+  }
+
+  const manageCodeDelivery = await persistManageCodeDelivery({
+    appointmentId: storedAppointmentWithProviderId.id,
+    manageCode: manageCodeData.manageCode,
+    appointment: storedAppointmentWithProviderId
+  });
 
   return {
     ok: true,
     booked: true,
     service: serviceName,
     patient_info: serviceConfig.patientInfo,
-    provider: CONFIG.calendarProvider,
-    appointment: storedAppointment
+    provider: providerName,
+    appointment: storedAppointmentWithProviderId,
+    manage_code: manageCodeData.manageCode,
+    manage_code_delivery: manageCodeDelivery
+  };
+}
+
+async function lookupBookingByManageCode(payload) {
+  const lookupResult = getManageableAppointmentFromPayload(payload);
+
+  if (!lookupResult.ok) {
+    return lookupResult;
+  }
+
+  const appointment = lookupResult.record;
+
+  return {
+    ok: true,
+    manageable: true,
+    provider: appointment.provider,
+    appointment_summary: buildAppointmentSummary(appointment),
+    service: appointment.service,
+    start_time: appointment.start_time,
+    end_time: appointment.end_time,
+    timezone: CONFIG.timezone,
+    appointment_status: appointment.status,
+    allowed_actions: ["cancel", "reschedule"]
   };
 }
 
 async function cancelAppointment(payload) {
-  const provider = getCalendarProvider();
-  const appointmentId = payload.appointment_id || payload.id;
+  const lookupResult = getManageableAppointmentFromPayload(payload);
 
-  if (!appointmentId) {
-    return {
-      ok: false,
-      error: "Missing required field: appointment_id"
-    };
+  if (!lookupResult.ok) {
+    return lookupResult;
   }
 
-  const cancelled = await provider.cancelAppointment({
-    appointmentId
-  });
+  const appointment = lookupResult.record;
+  const provider = getCalendarProvider(appointment.provider);
+  let cancelled = false;
+
+  try {
+    cancelled = await provider.cancelAppointment({
+      appointmentId: appointment.provider_appointment_id
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      error: "Unable to cancel the booking at the moment. Please try again later."
+    };
+  }
 
   if (!cancelled) {
     return {
       ok: false,
-      error: "Appointment not found or already cancelled.",
-      appointment_id: appointmentId
+      error: "Unable to cancel the booking at the moment. Please try again later."
     };
+  }
+
+  const registryUpdated = markAppointmentRegistryCancelled({
+    appointmentId: appointment.appointment_id,
+    updatedAt: new Date().toISOString()
+  });
+
+  if (!registryUpdated) {
+    const refreshedRegistryRecord = getAppointmentRegistryById(appointment.appointment_id);
+
+    if (refreshedRegistryRecord && refreshedRegistryRecord.status === "cancelled") {
+      return {
+        ok: true,
+        cancelled: true,
+        provider: appointment.provider,
+        service: appointment.service,
+        start_time: appointment.start_time,
+        appointment_status: "cancelled"
+      };
+    }
+
+    throw new Error("Cancellation succeeded in provider but registry synchronization failed.");
   }
 
   return {
     ok: true,
     cancelled: true,
-    provider: CONFIG.calendarProvider,
-    appointment_id: appointmentId
+    provider: appointment.provider,
+    service: appointment.service,
+    start_time: appointment.start_time,
+    appointment_status: "cancelled"
+  };
+}
+
+async function rescheduleAppointment(payload) {
+  if (!payload.new_start_time) {
+    return {
+      ok: false,
+      error: "Missing required field: new_start_time"
+    };
+  }
+
+  const newStartTimeValidation = validateStartTimeInput(payload.new_start_time, "new_start_time");
+  if (!newStartTimeValidation.ok) {
+    return newStartTimeValidation;
+  }
+
+  const lookupResult = getManageableAppointmentFromPayload(payload);
+
+  if (!lookupResult.ok) {
+    return lookupResult;
+  }
+
+  const appointment = lookupResult.record;
+
+  if (isSameInstant(payload.new_start_time, appointment.start_time)) {
+    return {
+      ok: false,
+      error: "The new_start_time must be different from the current appointment time."
+    };
+  }
+
+  const availabilityResult = await checkAvailability({
+    start_time: payload.new_start_time,
+    service: appointment.service,
+    provider_name: appointment.provider,
+    exclude_appointment_ids: [
+      appointment.appointment_id,
+      appointment.provider_appointment_id
+    ]
+  });
+
+  if (!availabilityResult.ok) {
+    return availabilityResult;
+  }
+
+  if (!availabilityResult.available) {
+    return {
+      ok: false,
+      error: "Requested slot is not available.",
+      service: appointment.service,
+      requested_start: availabilityResult.requested_start,
+      next_available_slots: availabilityResult.next_available_slots
+    };
+  }
+
+  const provider = getCalendarProvider(appointment.provider);
+  const newAppointment = {
+    id: createAppointmentId(),
+    customer_name: appointment.customer_name || null,
+    customer_phone: appointment.customer_phone || null,
+    customer_email: appointment.customer_email || null,
+    service: appointment.service,
+    start_time: availabilityResult.requested_start,
+    end_time: availabilityResult.requested_end,
+    notes: appointment.notes || null,
+    status: "confirmed",
+    created_at: new Date().toISOString()
+  };
+
+  const newManageCodeData = createManageCode();
+  const storedNewAppointment = await provider.createAppointment(newAppointment);
+  const storedNewAppointmentWithProviderId = {
+    ...storedNewAppointment,
+    provider_appointment_id: getProviderAppointmentId(storedNewAppointment)
+  };
+
+  try {
+    createAppointmentRegistryEntry(
+      createRegistryEntry({
+        appointment: storedNewAppointmentWithProviderId,
+        providerName: appointment.provider,
+        manageCodeHmac: newManageCodeData.manageCodeHmac,
+        status: "pending_reschedule"
+      })
+    );
+  } catch (error) {
+    await rollbackCreatedAppointment(appointment.provider, storedNewAppointmentWithProviderId);
+    throw error;
+  }
+
+  let oldCancelled = false;
+
+  try {
+    oldCancelled = await provider.cancelAppointment({
+      appointmentId: appointment.provider_appointment_id
+    });
+  } catch (error) {
+    oldCancelled = false;
+  }
+
+  if (!oldCancelled) {
+    const rollbackSucceeded = await rollbackCreatedAppointment(
+      appointment.provider,
+      storedNewAppointmentWithProviderId
+    );
+
+    if (rollbackSucceeded) {
+      deleteAppointmentRegistryEntry(storedNewAppointmentWithProviderId.id);
+    } else {
+      markAppointmentRegistryRollbackFailed({
+        appointmentId: storedNewAppointmentWithProviderId.id,
+        updatedAt: new Date().toISOString(),
+        errorMessage: "Failed to cancel the original appointment and failed to roll back the new appointment."
+      });
+    }
+
+    return {
+      ok: false,
+      error: "Unable to reschedule the booking at the moment. Please try again later."
+    };
+  }
+
+  try {
+    finalizeRescheduleTransition({
+      oldAppointmentId: appointment.appointment_id,
+      newAppointmentId: storedNewAppointmentWithProviderId.id,
+      updatedAt: new Date().toISOString()
+    });
+  } catch (error) {
+    const rollbackSucceeded = await rollbackCreatedAppointment(
+      appointment.provider,
+      storedNewAppointmentWithProviderId
+    );
+
+    if (rollbackSucceeded) {
+      deleteAppointmentRegistryEntry(storedNewAppointmentWithProviderId.id);
+    } else {
+      markAppointmentRegistryRollbackFailed({
+        appointmentId: storedNewAppointmentWithProviderId.id,
+        updatedAt: new Date().toISOString(),
+        errorMessage: "Reschedule transition failed and rollback could not cancel the new appointment."
+      });
+    }
+
+    return {
+      ok: false,
+      error: "Unable to reschedule the booking at the moment. Please try again later."
+    };
+  }
+
+  const manageCodeDelivery = await persistManageCodeDelivery({
+    appointmentId: storedNewAppointmentWithProviderId.id,
+    manageCode: newManageCodeData.manageCode,
+    appointment: storedNewAppointmentWithProviderId
+  });
+
+  return {
+    ok: true,
+    rescheduled: true,
+    provider: appointment.provider,
+    service: appointment.service,
+    old_start_time: appointment.start_time,
+    new_appointment: storedNewAppointmentWithProviderId,
+    new_manage_code: newManageCodeData.manageCode,
+    manage_code_delivery: manageCodeDelivery
   };
 }
 
@@ -539,5 +1030,7 @@ module.exports = {
   formatDateTimeLocal,
   generateSlotsForDate,
   generateSlotsForService,
-  getStoredAppointments
+  getStoredAppointments,
+  lookupBookingByManageCode,
+  rescheduleAppointment
 };

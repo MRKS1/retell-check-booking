@@ -21,7 +21,10 @@ const sqliteProvider = {
 
   async createAppointment(appointment) {
     createAppointment(appointment);
-    return appointment;
+    return {
+      ...appointment,
+      provider_appointment_id: appointment.id
+    };
   },
 
   async cancelAppointment({ appointmentId }) {

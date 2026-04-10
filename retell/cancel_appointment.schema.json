@@ -1,12 +1,12 @@
 {
   "type": "object",
   "required": [
-    "appointment_id"
+    "manage_code"
   ],
   "properties": {
-    "appointment_id": {
+    "manage_code": {
       "type": "string",
-      "description": "The appointment id returned by book_appointment. For Google Calendar provider this is the Google event id."
+      "description": "8-digit manage code returned by book_appointment. The patient uses this code to cancel the booking."
     }
   }
 }

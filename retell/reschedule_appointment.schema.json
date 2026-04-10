@@ -1,0 +1,17 @@
+{
+  "type": "object",
+  "required": [
+    "manage_code",
+    "new_start_time"
+  ],
+  "properties": {
+    "manage_code": {
+      "type": "string",
+      "description": "8-digit manage code returned by book_appointment."
+    },
+    "new_start_time": {
+      "type": "string",
+      "description": "New appointment start time in ISO 8601 format with timezone offset, for example 2026-04-03T10:00:00+02:00."
+    }
+  }
+}

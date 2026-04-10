@@ -131,15 +131,40 @@ async function googleCalendarRequest(pathname, options = {}) {
   return response.json();
 }
 
+function parsePhoneFromDescription(description) {
+  if (!description || typeof description !== "string") {
+    return null;
+  }
+
+  const line = description
+    .split("\n")
+    .find((entry) => entry.startsWith("Phone:"));
+
+  if (!line) {
+    return null;
+  }
+
+  const parsed = line.slice("Phone:".length).trim();
+  if (!parsed || parsed === "N/A") {
+    return null;
+  }
+
+  return parsed;
+}
+
 function mapGoogleEvent(event) {
+  const privateProperties = event.extendedProperties && event.extendedProperties.private
+    ? event.extendedProperties.private
+    : {};
+  const localAppointmentId = privateProperties.local_appointment_id || null;
+
   return {
-    id: event.id,
+    id: localAppointmentId || event.id,
+    provider_appointment_id: event.id,
     customer_name: event.summary || null,
-    customer_phone: null,
+    customer_phone: parsePhoneFromDescription(event.description),
     customer_email: event.attendees && event.attendees[0] ? event.attendees[0].email : null,
-    service: event.extendedProperties && event.extendedProperties.private
-      ? event.extendedProperties.private.service || "google_calendar_event"
-      : "google_calendar_event",
+    service: privateProperties.service || "google_calendar_event",
     start_time: event.start.dateTime,
     end_time: event.end.dateTime,
     notes: event.description || null,
@@ -210,7 +235,7 @@ const googleCalendarProvider = {
 
     return {
       ...appointment,
-      id: event.id,
+      provider_appointment_id: event.id,
       created_at: event.created || appointment.created_at
     };
   },

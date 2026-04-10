@@ -1,0 +1,12 @@
+{
+  "type": "object",
+  "required": [
+    "manage_code"
+  ],
+  "properties": {
+    "manage_code": {
+      "type": "string",
+      "description": "8-digit manage code returned by book_appointment. Use this to look up a booking before cancellation or reschedule."
+    }
+  }
+}

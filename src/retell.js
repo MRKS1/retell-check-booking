@@ -31,6 +31,14 @@ function formatSlots(slots) {
     .join("; ");
 }
 
+function formatDigits(value) {
+  if (!value) {
+    return null;
+  }
+
+  return String(value).split("").join(" ");
+}
+
 function buildSummary(functionName, result) {
   if (!result.ok) {
     const suffix = result.next_available_slots
@@ -40,7 +48,25 @@ function buildSummary(functionName, result) {
   }
 
   if (functionName === "book_appointment") {
-    return `Appointment booked for ${result.appointment.start_time}.`;
+    const codeSuffix = result.manage_code
+      ? ` Manage code: ${formatDigits(result.manage_code)}.`
+      : "";
+    return `Appointment booked for ${result.appointment.start_time}.${codeSuffix}`;
+  }
+
+  if (functionName === "lookup_booking_by_manage_code") {
+    return `Found active appointment at ${result.start_time}. Allowed actions: ${result.allowed_actions.join(", ")}.`;
+  }
+
+  if (functionName === "cancel_appointment") {
+    return `Appointment at ${result.start_time} has been cancelled.`;
+  }
+
+  if (functionName === "reschedule_appointment") {
+    const codeSuffix = result.new_manage_code
+      ? ` New manage code: ${formatDigits(result.new_manage_code)}.`
+      : "";
+    return `Appointment moved from ${result.old_start_time} to ${result.new_appointment.start_time}.${codeSuffix}`;
   }
 
   if (result.requested_start && result.available) {
