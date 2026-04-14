@@ -21,5 +21,9 @@ services:
         sync: false
       - key: MANAGE_CODE_SECRET
         sync: false
+      - key: RETELL_API_KEY
+        sync: false
+      - key: RETELL_AGENT_ID
+        sync: false
       - key: NODE_VERSION
         value: 24.14.0

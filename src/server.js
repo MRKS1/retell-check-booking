@@ -1,3 +1,5 @@
+require('dotenv').config();
+
 const http = require("http");
 const {
   bookAppointment,
@@ -19,7 +21,10 @@ initializeCalendarProvider();
 
 function sendJson(response, statusCode, payload) {
   response.writeHead(statusCode, {
-    "Content-Type": "application/json"
+    "Content-Type": "application/json",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type, Authorization"
   });
   response.end(JSON.stringify(payload, null, 2));
 }
@@ -37,7 +42,7 @@ function parseRequestBody(request) {
   return new Promise((resolve, reject) => {
     let body = "";
 
-    request.on("data", (chunk) => {
+    request.on("data", (chunk) => {http;
       body += chunk.toString();
     });
 
@@ -116,6 +121,17 @@ async function handleManagedFunctionResponse(request, response, defaultFunctionN
 }
 
 const server = http.createServer(async (request, response) => {
+  // Handle CORS preflight requests
+  if (request.method === "OPTIONS") {
+    response.writeHead(200, {
+      "Access-Control-Allow-Origin": "*",
+      "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+      "Access-Control-Allow-Headers": "Content-Type, Authorization"
+    });
+    response.end();
+    return;
+  }
+
   if (
     request.method === "GET" &&
     (request.url === "/" || request.url === "/health")
@@ -194,6 +210,50 @@ const server = http.createServer(async (request, response) => {
       sendJson(response, 400, {
         ok: false,
         error: "Unable to process the request right now. Please try again later."
+      });
+    }
+    return;
+  }
+
+  if (request.method === "POST" && request.url === "/create-call") {
+    try {
+      if (!CONFIG.retellApiKey || !CONFIG.retellAgentId) {
+        sendJson(response, 500, {
+          ok: false,
+          error: "Retell configuration missing"
+        });
+        return;
+      }
+
+      const responseFetch = await fetch('https://api.retellai.com/v2/create-web-call', {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${CONFIG.retellApiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          agent_id: CONFIG.retellAgentId
+        })
+      });
+
+      if (!responseFetch.ok) {
+        const errorText = await responseFetch.text();
+        console.error('Retell API error:', errorText);
+        sendJson(response, 500, {
+          ok: false,
+          error: 'Failed to create call'
+        });
+        return;
+      }
+
+      const data = await responseFetch.json();
+      console.log('Retell API Response:', JSON.stringify(data, null, 2));
+      sendJson(response, 200, data);
+    } catch (error) {
+      console.error('Error creating call:', error.message);
+      sendJson(response, 500, {
+        ok: false,
+        error: 'Failed to create call'
       });
     }
     return;

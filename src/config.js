@@ -34,6 +34,8 @@ const CONFIG = {
   smsWebhookAuthValue: process.env.SMS_WEBHOOK_AUTH_VALUE || null,
   manageCodeRateLimitMax: Number.parseInt(process.env.MANAGE_CODE_RATE_LIMIT_MAX || "5", 10),
   manageCodeRateLimitWindowMs: Number.parseInt(process.env.MANAGE_CODE_RATE_LIMIT_WINDOW_MS || "600000", 10),
+  retellApiKey: process.env.RETELL_API_KEY,
+  retellAgentId: process.env.RETELL_AGENT_ID,
   businessHours: {
     monday: ["07:00", "15:00"],
     tuesday: ["07:00", "15:00"],
